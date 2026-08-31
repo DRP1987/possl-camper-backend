@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from .alerts import AlertEngine
 from .config import settings
 from .database import Database
-from .flespi import FlespiClient, get_history
+from .flespi import FlespiClient, get_history, get_latest_telemetry
 from .state import telemetry_state
 from .trips import create_trips
 
@@ -48,11 +48,28 @@ class TestNotificationModel(BaseModel):
     message: str = "Test notification from the PÖSSL telematics backend."
 
 
+async def telemetry_rest_sync_loop():
+    while True:
+        try:
+            snapshot, newest_ts = await get_latest_telemetry()
+            if snapshot:
+                telemetry_state.update_message(snapshot, source_timestamp=newest_ts or None)
+        except Exception as exc:
+            print(f"flespi REST telemetry sync failed: {exc}")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     telemetry_state.set_loop(asyncio.get_running_loop())
     flespi.start()
+    sync_task = asyncio.create_task(telemetry_rest_sync_loop())
     yield
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
     flespi.stop()
 
 

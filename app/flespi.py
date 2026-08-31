@@ -104,11 +104,16 @@ class FlespiClient:
         topic = message.topic
         data = {}
 
+        source_ts = None
         if "/telemetry/" in topic:
             name = topic.split("/telemetry/", 1)[1]
             try:
                 parsed = json.loads(payload)
-                value = parsed.get("value") if isinstance(parsed, dict) and "value" in parsed else parsed
+                if isinstance(parsed, dict):
+                    value = parsed.get("value") if "value" in parsed else parsed
+                    source_ts = parsed.get("ts")
+                else:
+                    value = parsed
             except Exception:
                 value = payload
             data[name] = value
@@ -134,8 +139,34 @@ class FlespiClient:
                 return
 
         if data:
-            telemetry_state.update_message(data)
+            telemetry_state.update_message(data, source_timestamp=source_ts)
             self.on_message_callback(data)
+
+
+async def get_latest_telemetry() -> tuple[dict, float]:
+    url = f"https://flespi.io/gw/devices/{settings.flespi_device_id}/telemetry/all"
+    headers = {"Authorization": f"FlespiToken {settings.flespi_token}", "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+    result = payload.get("result", payload) if isinstance(payload, dict) else payload
+    if isinstance(result, list):
+        result = result[0] if result else {}
+    telemetry_obj = result.get("telemetry", result) if isinstance(result, dict) else {}
+    flat = {}
+    newest_ts = 0.0
+    if isinstance(telemetry_obj, dict):
+        for name, item in telemetry_obj.items():
+            if isinstance(item, dict) and "value" in item:
+                flat[name] = item.get("value")
+                try:
+                    newest_ts = max(newest_ts, float(item.get("ts") or 0))
+                except Exception:
+                    pass
+            else:
+                flat[name] = item
+    return flat, newest_ts
 
 
 async def get_history(from_ts: int, to_ts: int, count: int = 20000) -> list[dict]:
